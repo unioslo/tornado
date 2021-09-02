@@ -61,15 +61,23 @@ _ERRNO_WOULDBLOCK = (errno.EWOULDBLOCK, errno.EAGAIN)
 if hasattr(errno, "WSAEWOULDBLOCK"):
     _ERRNO_WOULDBLOCK += (errno.WSAEWOULDBLOCK,)  # type: ignore
 
-# Default backlog used when calling sock.listen()
-_DEFAULT_BACKLOG = 128
+# Default backlog used when calling sock.listen(); if `None`, no value is
+# passed to `socket.listen` implying normally that Python will decide on
+# the backlog size for the socket. For Python < 3.6, an error will be
+# raised by `socket.listen` if no argument is provided.
+DEFAULT_BACKLOG = None
+
+# Number of connections to try and accept in one sweep of an I/O loop;
+# if falsy (e.g. `None` or zero) the number will be decided on
+# automatically.
+ACCEPT_CALLS_PER_EVENT_LOOP = None
 
 
 def bind_sockets(
     port: int,
     address: str = None,
     family: socket.AddressFamily = socket.AF_UNSPEC,
-    backlog: int = _DEFAULT_BACKLOG,
+    backlog: int = None,
     flags: int = None,
     reuse_port: bool = False,
 ) -> List[socket.socket]:
@@ -87,7 +95,8 @@ def bind_sockets(
     both will be used if available.
 
     The ``backlog`` argument has the same meaning as for
-    `socket.listen() <socket.socket.listen>`.
+    `socket.listen() <socket.socket.listen>` if it carries an integer
+    value; if `None`, the backlog size is chosen automatically.
 
     ``flags`` is a bitmask of AI_* flags to `~socket.getaddrinfo`, like
     ``socket.AI_PASSIVE | socket.AI_NUMERICHOST``.
@@ -173,7 +182,7 @@ def bind_sockets(
         sock.setblocking(False)
         sock.bind(sockaddr)
         bound_port = sock.getsockname()[1]
-        sock.listen(backlog)
+        listen(sock, backlog)
         sockets.append(sock)
     return sockets
 
@@ -181,7 +190,7 @@ def bind_sockets(
 if hasattr(socket, "AF_UNIX"):
 
     def bind_unix_socket(
-        file: str, mode: int = 0o600, backlog: int = _DEFAULT_BACKLOG
+        file: str, mode: int = 0o600, backlog: int = None
     ) -> socket.socket:
         """Creates a listening unix socket.
 
@@ -213,7 +222,7 @@ if hasattr(socket, "AF_UNIX"):
                 raise ValueError("File %s exists and is not a socket", file)
         sock.bind(file)
         os.chmod(file, mode)
-        sock.listen(backlog)
+        listen(sock, backlog)
         return sock
 
 
@@ -252,7 +261,7 @@ def add_accept_handler(
         # Instead, we use the (default) listen backlog as a rough
         # heuristic for the number of connections we can reasonably
         # accept at once.
-        for i in range(_DEFAULT_BACKLOG):
+        for i in range(ACCEPT_CALLS_PER_EVENT_LOOP or DEFAULT_BACKLOG or 128):
             if removed[0]:
                 # The socket was probably closed
                 return
@@ -612,3 +621,12 @@ def ssl_wrap_socket(
         return context.wrap_socket(socket, server_hostname=server_hostname, **kwargs)
     else:
         return context.wrap_socket(socket, **kwargs)
+
+
+def listen(socket: socket.socket, backlog: int = None):
+    """A helper procedure to better delegate `socket.listen` calls where
+    backlog may or may not be specified.
+    """
+    if backlog is None:
+        backlog = DEFAULT_BACKLOG
+    return socket.listen(backlog) if backlog is not None else socket.listen()
